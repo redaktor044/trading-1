@@ -2,6 +2,7 @@ import { createChart, ColorType, LineStyle } from 'lightweight-charts';
 import { analyze } from './analysis.js';
 import { Zones } from './zones.js';
 import { findSymbols } from './instruments.js';
+import { FibonacciOverlay, fibonacciLevels } from './fibonacci.js';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -31,6 +32,7 @@ app.innerHTML = `
     <section class="chart-card" aria-label="Wykres ceny">
       <div class="chart-heading"><div class="instrument-heading"><h1 id="chart-title">BTC / USDT <span>Perpetual</span></h1><span class="market-source"><span class="status-dot"></span> MEXC</span></div><div class="market-summary"><span id="price">—</span><small id="quote-label">USDT</small><span id="live-status" role="status">Łączenie z MEXC…</span><span id="candle-time">Oczekiwanie na dane</span></div></div>
       <div class="layers"><span class="layers-title">NA WYKRESIE</span><label><input type="checkbox" data-layer="ema" checked><span>Średnie EMA</span></label><label><input type="checkbox" data-layer="levels" checked><span>Wsparcie i opór</span></label><label><input type="checkbox" data-layer="fib"><span>Fibo</span></label><label><input type="checkbox" data-layer="fvg"><span>FVG</span></label><label class="draw-control" for="draw-mode">Rysuj <select id="draw-mode"><option value="">Wybierz narzędzie</option><option value="support">Wsparcie</option><option value="resistance">Opór</option><option value="fib">Fibo · 2 punkty</option></select></label><button id="edit-open">✎ <span>Edytuj poziomy</span></button><span id="draw-status" role="status"></span></div>
+      <div id="fib-guide" class="fib-guide" hidden><span class="fib-guide-title">FIBONACCI</span><span><i class="fib-swatch fib-swatch-gold"></i> Golden zone · 0,618–0,65</span><span><i class="fib-swatch fib-swatch-adjacent"></i> Strefy sąsiednie · 0,5–0,618 i 0,65–0,786</span><span id="fib-guide-status" role="status"></span></div>
       <div id="chart"></div>
       <details class="overlay-details"><summary>Szczegóły poziomów i stref</summary><div id="overlay-summary">Oczekiwanie na dane.</div></details>
       <div class="chart-footer"><div class="legend-items"><span><i class="legend support"></i> Wsparcie</span><span><i class="legend resistance"></i> Opór</span><span><i class="legend ema20"></i> EMA 20</span><span><i class="legend ema50"></i> EMA 50</span><span><i class="legend ema200"></i> EMA 200</span><span><i class="legend fib"></i> Fibo</span><span><i class="legend fvg-up"></i> FVG wzrostowe</span><span><i class="legend fvg-down"></i> FVG spadkowe</span></div><span id="data-status">Ostatnia zamknięta świeca</span></div>
@@ -43,7 +45,7 @@ app.innerHTML = `
   </main>
 </div>
 <dialog id="settings"><form method="dialog" class="dialog"><div class="dialog-head"><h2>Ustawienia OpenRouter</h2><button class="close" aria-label="Zamknij">×</button></div><p>Klucz służy do rozumienia swobodnych poleceń. Jest przechowywany w pamięci serwera do jego wyłączenia.</p><label>Klucz API<input id="api-key" type="password" autocomplete="off" placeholder="Wklej klucz OpenRouter"></label><label>Model<input id="model" value="openai/gpt-4o-mini"></label><div id="key-status" class="quiet"></div><div class="dialog-actions"><button type="button" id="key-delete" class="secondary">Usuń klucz</button><button type="button" id="key-save" class="primary">Zapisz klucz</button></div></form></dialog>
-<dialog id="edit-dialog"><form method="dialog" class="dialog"><div class="dialog-head"><h2>Edytuj poziomy</h2><button class="close" aria-label="Zamknij">×</button></div><p>Wpisz własne ceny. Zmiany dotyczą bieżącej analizy i są oznaczone jako ręczne.</p><div class="field-grid"><label>Fibo początek<input id="fib-start" type="number" step="any"></label><label>Fibo koniec<input id="fib-end" type="number" step="any"></label><label>Wsparcie<input id="support-edit" type="number" step="any"></label><label>Opór<input id="resistance-edit" type="number" step="any"></label></div><div class="dialog-actions"><button type="button" id="edit-reset" class="secondary">Przywróć automatyczne</button><button type="button" id="edit-save" class="primary">Zastosuj</button></div></form></dialog>`;
+<dialog id="edit-dialog"><form method="dialog" class="dialog"><div class="dialog-head"><h2>Edytuj poziomy</h2><button class="close" aria-label="Zamknij">×</button></div><p>Wpisz własne ceny. Zmiany dotyczą bieżącej analizy i są oznaczone jako ręczne.</p><div class="field-grid"><label>Fibo początek<input id="fib-start" type="number" step="any"></label><label>Fibo koniec<input id="fib-end" type="number" step="any"></label><label>Wsparcie<input id="support-edit" type="number" step="any"></label><label>Opór<input id="resistance-edit" type="number" step="any"></label></div><p id="edit-error" class="edit-error" role="alert"></p><div class="dialog-actions"><button type="button" id="edit-reset" class="secondary">Przywróć automatyczne</button><button type="button" id="edit-save" class="primary">Zastosuj</button></div></form></dialog>`;
 const $ = s => document.querySelector(s);
 const intervals = ['M1','M5','M15','M30','H1','H4','H8','D1','W1'];
 for (const id of ['interval','context']) $(`#${id}`).innerHTML = intervals.map(i => `<option>${i}</option>`).join('');
@@ -63,6 +65,8 @@ const candlesSeries = chart.addCandlestickSeries({ upColor:'#67a991', downColor:
 const emaSeries = { 20: chart.addLineSeries({color:'#d99c4a',lineWidth:1,priceLineVisible:false,lastValueVisible:false}), 50: chart.addLineSeries({color:'#718fce',lineWidth:1,priceLineVisible:false,lastValueVisible:false}), 200: chart.addLineSeries({color:'#b78ac3',lineWidth:1,priceLineVisible:false,lastValueVisible:false}) };
 const zones = new Zones(chart, candlesSeries);
 candlesSeries.attachPrimitive(zones);
+const fibonacci = new FibonacciOverlay(candlesSeries);
+candlesSeries.attachPrimitive(fibonacci);
 new ResizeObserver(entries => chart.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height })).observe($('#chart'));
 let state = null, manual = {}, priceLines = [], lastRequest = 0, pendingFib = null;
 const fmt = n => Number.isFinite(n) ? n.toLocaleString('pl-PL', { maximumFractionDigits: Math.abs(n) < 1 ? 16 : Math.abs(n) < 100 ? 5 : 2 }) : '—';
@@ -87,10 +91,12 @@ function renderLines() {
     if (manual.support == null && a.support) areas.push({ low: a.support.min, high: a.support.max, color: 'rgba(41, 160, 122, 0.16)' });
     if (manual.resistance == null && a.resistance) areas.push({ low: a.resistance.min, high: a.resistance.max, color: 'rgba(204, 97, 89, 0.15)' });
   }
-  if (visible('fib') && (a.fib || (manual.fibStart != null && manual.fibEnd != null))) {
-    const start = manual.fibStart ?? a.fib.start.price, end = manual.fibEnd ?? a.fib.end.price;
-    for (const ratio of [0, .382, .5, .618, .786, 1]) line(end + (start - end) * ratio, `Fibo ${ratio}`, '#8967b0', LineStyle.Dotted, false);
-  }
+  const fibStart = manual.fibStart ?? a.fib?.start.price;
+  const fibEnd = manual.fibEnd ?? a.fib?.end.price;
+  const fibLevels = visible('fib') ? fibonacciLevels(fibStart, fibEnd) : [];
+  fibonacci.setLevels(fibLevels, priceFmt);
+  $('#fib-guide').hidden = !visible('fib');
+  $('#fib-guide-status').textContent = visible('fib') && !fibLevels.length ? 'Brak poprawnego pomiaru — wybierz dwa różne punkty Fibo.' : '';
   if (visible('fvg')) {
     for (const f of a.fvg) areas.push({ low: f.low, high: f.high, time: f.time, color: f.direction === 'wzrostowa' ? 'rgba(54, 152, 146, 0.19)' : 'rgba(220, 153, 63, 0.20)' });
   }
@@ -103,11 +109,14 @@ function renderLines() {
       else details.push(`${name}: brak potwierdzonego poziomu`);
     }
   }
-  if (visible('fib') && (a.fib || (manual.fibStart != null && manual.fibEnd != null))) {
-    const start = manual.fibStart ?? a.fib.start.price;
-    const end = manual.fibEnd ?? a.fib.end.price;
-    const values = [.382, .5, .618, .786].map(ratio => `${ratio}: ${priceFmt(end + (start - end) * ratio)}`).join(' · ');
-    details.push(`Fibo: ${priceFmt(start)} → ${priceFmt(end)} ${quote}${manual.fibStart != null || manual.fibEnd != null ? ' · ręczne' : ''} | ${values}`);
+  if (fibLevels.length) {
+    const values = fibLevels.map(level => `${String(level.ratio).replace('.', ',')}: ${priceFmt(level.price)}`).join(' · ');
+    details.push(`Fibo: ${priceFmt(fibStart)} → ${priceFmt(fibEnd)} ${quote}${manual.fibStart != null || manual.fibEnd != null ? ' · ręczne' : ''} | ${values}`);
+    const goldenA = fibLevels.find(level => level.ratio === 0.618).price;
+    const goldenB = fibLevels.find(level => level.ratio === 0.65).price;
+    details.push(`Golden zone 0,618–0,65: ${priceFmt(Math.min(goldenA, goldenB))}–${priceFmt(Math.max(goldenA, goldenB))} ${quote}`);
+  } else if (visible('fib')) {
+    details.push('Fibo: brak poprawnego pomiaru. Wybierz dwa różne punkty.');
   }
   if (visible('fvg')) {
     if (!a.fvg.length) details.push('Brak aktywnych FVG w analizowanym zakresie.');
@@ -235,7 +244,7 @@ async function load({ preserve = false } = {}) {
     $('#draw-mode').value = ''; pendingFib = null; $('#draw-status').textContent = ''; $('#chart').classList.remove('drawing');
     state = null;
     candlesSeries.setData([]); Object.values(emaSeries).forEach(series => series.setData([]));
-    priceLines.forEach(line => candlesSeries.removePriceLine(line)); priceLines = []; zones.setZones([]);
+    priceLines.forEach(line => candlesSeries.removePriceLine(line)); priceLines = []; zones.setZones([]); fibonacci.setLevels([], priceFmt);
     $('#price').textContent = '—'; $('#chart-title').textContent = symbol;
     $('#candle-time').textContent = 'Pobieranie danych…'; $('#data-status').textContent = '';
     $('#overlay-summary').textContent = 'Pobieranie danych…'; $('#overview').textContent = 'Pobieranie danych…'; $('#scenarios').innerHTML = '';
@@ -269,7 +278,7 @@ async function load({ preserve = false } = {}) {
     if (request !== lastRequest) return;
     state = null;
     candlesSeries.setData([]); Object.values(emaSeries).forEach(series => series.setData([]));
-    priceLines.forEach(line => candlesSeries.removePriceLine(line)); priceLines = []; zones.setZones([]);
+    priceLines.forEach(line => candlesSeries.removePriceLine(line)); priceLines = []; zones.setZones([]); fibonacci.setLevels([], priceFmt);
     $('#price').textContent = '—'; $('#chart-title').textContent = `${symbol} · ${market === 'spot' ? 'Spot' : 'Perpetual'}`;
     $('#candle-time').textContent = 'Dane niedostępne'; $('#data-status').textContent = ''; $('#overlay-summary').textContent = 'Dane niedostępne.';
     $('#overview').textContent = 'Analiza niedostępna.'; $('#scenarios').innerHTML = ''; setLiveStatus('Brak danych');
@@ -331,6 +340,10 @@ $('#chart').addEventListener('pointerup', event => {
     $('#draw-status').textContent = `Pierwszy punkt ${priceFmt(price)}. Kliknij drugi punkt Fibo.`;
     return;
   }
+  if (mode === 'fib' && price === pendingFib) {
+    $('#draw-status').textContent = 'Punkty Fibo muszą mieć różne ceny. Kliknij inny drugi punkt.';
+    return;
+  }
   if (mode === 'fib') {
     manual.fibStart = pendingFib;
     manual.fibEnd = price;
@@ -347,8 +360,8 @@ $('#chart').addEventListener('pointerup', event => {
 });
 $('#settings-open').onclick=()=>$('#settings').showModal(); $('#key-save').onclick=()=>saveKey($('#api-key').value); $('#key-delete').onclick=()=>saveKey('');
 async function saveKey(key) { const res=await fetch('/api/key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}); const data=await res.json(); $('#api-key').value=''; $('#key-status').textContent=data.configured?'Klucz zapisany na czas działania serwera.':'Klucz usunięty.'; }
-$('#edit-open').onclick=()=>{ if(!state)return; $('#fib-start').value=manual.fibStart??state.analysis?.fib?.start.price??''; $('#fib-end').value=manual.fibEnd??state.analysis?.fib?.end.price??''; $('#support-edit').value=manual.support??state.analysis?.support?.price??''; $('#resistance-edit').value=manual.resistance??state.analysis?.resistance?.price??''; $('#edit-dialog').showModal(); };
-$('#edit-save').onclick=()=>{ manual={}; for(const [id,key] of [['fib-start','fibStart'],['fib-end','fibEnd'],['support-edit','support'],['resistance-edit','resistance']]) {const value=Number($(`#${id}`).value); if(value>0) manual[key]=value;} storeManual(); renderLines(); $('#scenarios').innerHTML = scenario('long') + scenario('short'); $('#edit-dialog').close(); }; $('#edit-reset').onclick=()=>{manual={};storeManual();renderLines();$('#scenarios').innerHTML = scenario('long') + scenario('short');$('#edit-dialog').close();};
+$('#edit-open').onclick=()=>{ if(!state)return; $('#edit-error').textContent=''; $('#fib-start').value=manual.fibStart??state.analysis?.fib?.start.price??''; $('#fib-end').value=manual.fibEnd??state.analysis?.fib?.end.price??''; $('#support-edit').value=manual.support??state.analysis?.support?.price??''; $('#resistance-edit').value=manual.resistance??state.analysis?.resistance?.price??''; $('#edit-dialog').showModal(); };
+$('#edit-save').onclick=()=>{ const first=Number($('#fib-start').value), second=Number($('#fib-end').value); if(first > 0 && first === second) { $('#edit-error').textContent='Punkty Fibo muszą mieć różne ceny.'; return; } $('#edit-error').textContent=''; manual={}; for(const [id,key] of [['fib-start','fibStart'],['fib-end','fibEnd'],['support-edit','support'],['resistance-edit','resistance']]) {const value=Number($(`#${id}`).value); if(value>0) manual[key]=value;} storeManual(); renderLines(); $('#scenarios').innerHTML = scenario('long') + scenario('short'); $('#edit-dialog').close(); }; $('#edit-reset').onclick=()=>{manual={};storeManual();renderLines();$('#scenarios').innerHTML = scenario('long') + scenario('short');$('#edit-dialog').close();};
 document.querySelectorAll('.example').forEach(b=>b.onclick=()=>{ $('#prompt').value=b.dataset.prompt; $('#command-form').requestSubmit(); });
 $('#command-form').onsubmit=async e=>{ e.preventDefault(); const prompt=$('#prompt').value.trim(); if(!prompt)return; let result={};
   const keyStatus=await fetch('/api/key').then(r=>r.json());
