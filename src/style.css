@@ -5,3 +5,5 @@
 #live-status{color:#9a6a20;font-size:10px;font-weight:600}#live-status.live-active{color:#1d7d50}.symbol-count{padding:8px 10px;color:#687c70;font-size:10px}.symbol-option span{text-align:right;margin-left:8px}
 
 .layers label.draw-control{border:0;background:transparent;padding:0;gap:5px;color:#476b56}.draw-control select{border:1px solid #dbe5de;border-radius:6px;background:#fff;color:#355a43;font-size:11px;padding:6px}.layers #draw-status{flex-basis:100%;color:#356b50;font-size:11px}.layers #draw-status:empty{display:none}#chart.drawing{cursor:crosshair}
+
+.symbol-input-wrap button.search-chevron{border:0;background:transparent;color:#597468;padding:0 4px;cursor:pointer;line-height:1;font-size:18px}.symbol-input-wrap button.search-chevron:hover{color:#205e43}

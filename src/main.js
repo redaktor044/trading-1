@@ -1,6 +1,7 @@
 import { createChart, ColorType, LineStyle } from 'lightweight-charts';
 import { analyze } from './analysis.js';
 import { Zones } from './zones.js';
+import { findSymbols } from './instruments.js';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -11,12 +12,12 @@ app.innerHTML = `
       <div class="brand"><span class="brand-mark">✳</span><span>przystań</span></div>
       <div class="symbol-picker">
         <label for="symbol">Para MEXC</label>
-        <div class="symbol-input-wrap"><span aria-hidden="true">⌕</span><input id="symbol" value="BTCUSDT" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="symbol-list" aria-expanded="false" aria-label="Szukaj pary MEXC"><span class="search-chevron" aria-hidden="true">⌄</span></div>
+        <div class="symbol-input-wrap"><span aria-hidden="true">⌕</span><input id="symbol" value="BTCUSDT" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="symbol-list" aria-expanded="false" aria-label="Szukaj pary MEXC"><button id="symbol-toggle" class="search-chevron" type="button" aria-label="Rozwiń listę par" aria-controls="symbol-list" aria-expanded="false">⌄</button></div>
         <div id="symbol-list" class="symbol-list" role="listbox" hidden></div>
         <div id="symbol-feedback" class="sr-only" role="status"></div>
       </div>
       <label class="top-control">Rynek<select id="market"><option value="futures">Futures</option><option value="spot">Spot</option></select></label>
-      <label class="top-control">Rodzaj<select id="asset-category"><option value="all">Wszystkie</option><option value="stock">Powiązane z akcjami</option><option value="other">Pozostałe</option></select></label>
+      <label class="top-control">Rodzaj<select id="asset-category"><option value="all">Wszystkie</option><option value="crypto">Kryptowaluty</option><option value="stock">Powiązane z akcjami</option><option value="other">Inne / bez kategorii</option></select></label>
       <label class="top-control">Interwał<select id="interval"></select></label>
       <label class="top-control context-control">Kontekst<select id="context"></select></label>
       <button id="refresh" class="refresh-button" title="Pobierz dane" aria-label="Pobierz dane">↻</button>
@@ -124,11 +125,12 @@ function scenario(type) {
   const target = Number.isFinite(entry) && Number.isFinite(stop) ? entry + (entry - stop) * 2 : null;
   const className = long ? 'bull' : 'bear';
   if (!entry || !stop || entry <= stop && long || entry >= stop && !long) return `<article class="scenario ${className}"><div class="scenario-title"><span>${long?'↗':'↘'}</span><div><small>SCENARIUSZ ${long?'WZROSTOWY':'SPADKOWY'}</small><h3>Brak czytelnych poziomów</h3></div></div><p>Za mało potwierdzonych stref, aby wyznaczyć warunki.</p></article>`;
-  return `<article class="scenario ${className}"><div class="scenario-title"><span>${long?'↗':'↘'}</span><div><small>SCENARIUSZ ${long?'WZROSTOWY':'SPADKOWY'}</small><h3>${long?'Wybicie ponad opór':'Wybicie poniżej wsparcia'}</h3></div></div><p>Warunek obserwacji: zamknięcie świecy ${long?'powyżej':'poniżej'} <strong>${priceFmt(entry)}</strong>. Sygnał nie jest potwierdzony, dopóki warunek nie wystąpi.</p><div class="scenario-levels"><div><small>UNIEWAŻNIENIE / SL</small><b>${priceFmt(stop)}</b></div><div><small>CEL 2R · SZACUNEK</small><b>${priceFmt(target)}</b></div></div><div class="scenario-foot">Trend ${esc(state.interval)} ${esc(a.trend)} · kontekst ${esc(state.context)} ${esc(state.contextAnalysis?.trend ?? 'niedostępny')}</div></article>`;
+  return `<article class="scenario ${className}"><div class="scenario-title"><span>${long?'↗':'↘'}</span><div><small>SCENARIUSZ ${long?'WZROSTOWY':'SPADKOWY'}</small><h3>${long?'Wybicie ponad opór':'Wybicie poniżej wsparcia'}</h3></div></div><p>Warunek obserwacji: zamknięcie świecy ${long?'powyżej':'poniżej'} <strong>${priceFmt(entry)}</strong>. Sygnał nie jest potwierdzony, dopóki warunek nie wystąpi.</p><div class="scenario-levels"><div><small>UNIEWAŻNIENIE / SL</small><b>${priceFmt(stop)}</b></div><div><small>CEL 2R · SZACUNEK</small><b>${priceFmt(target)}</b></div></div><div class="scenario-foot">Trend ${esc(state.interval)} ${esc(a.trend)} · kontekst ${esc(state.context)} ${esc(state.contextAnalysis?.trend ?? (state.contextPending ? 'wczytywanie…' : 'niedostępny'))}</div></article>`;
 }
 function render({ preserveView = false, preserveCalculator = false } = {}) {
-  const {analysis: a, contextAnalysis: c, candles, interval, context, market, instrument} = state;
-  $('#chart-title').innerHTML = `${esc(instrument.base)} / ${esc(instrument.quote)} <span>${market === 'spot' ? 'Spot' : 'Perpetual'}</span>${instrument.category === 'stock' ? '<span>Powiązane z akcjami wg MEXC</span>' : ''}`;
+  const {analysis: a, candles, market, instrument} = state;
+  const categoryLabel = { crypto: 'Kryptowaluty', stock: 'Powiązane z akcjami', other: 'Inne / bez kategorii' }[instrument.category] || 'Inne / bez kategorii';
+  $('#chart-title').innerHTML = `${esc(instrument.base)} / ${esc(instrument.quote)} <span>${market === 'spot' ? 'Spot' : 'Perpetual'}</span><span>${esc(categoryLabel)} · MEXC</span>`;
   $('#quote-label').textContent = instrument.quote;
   document.querySelectorAll('[data-quote]').forEach(label => label.textContent = instrument.quote);
   const last = state.currentCandle || candles.at(-1);
@@ -144,16 +146,20 @@ function render({ preserveView = false, preserveCalculator = false } = {}) {
   }
   if (!preserveView) chart.timeScale().fitContent();
   renderLines();
+  renderOverview();
+  if (!preserveCalculator) { $('#entry').value = last.close; $('#stop').value = ''; $('#target').value = ''; }
+  calculate();
+}
+function renderOverview() {
+  const { analysis: a, contextAnalysis: c, candles, interval, context, instrument } = state;
   if (a) {
-    $('#overview').innerHTML = `<div class="overview-row"><span>Trend ${esc(interval)}</span><strong>${esc(a.trend)}</strong></div><div class="overview-row"><span>Trend ${esc(context)}</span><strong>${esc(c?.trend ?? 'niedostępny')}</strong></div><div class="overview-row"><span>Cena / EMA 200</span><strong>${a.price > a.averages[200].at(-1) ? 'Powyżej' : 'Poniżej'}</strong></div><div class="overview-row"><span>RSI 14</span><strong>${fmt(a.rsi)}</strong></div><div class="overview-row"><span>ATR 14</span><strong>${priceFmt(a.atr)} ${esc(instrument.quote)}</strong></div><div class="overview-row"><span>Wolumen / średnia 20</span><strong>${fmt(a.volumeRatio)}×</strong></div><div class="overview-row"><span>Ostatnie aktywne FVG (maks. 5)</span><strong>${a.fvg.length}</strong></div><div class="insight">${!c ? 'Brak wystarczających danych dla interwału kontekstowego.' : a.trend === c.trend && a.trend !== 'niejednoznaczny' ? 'Struktura obu interwałów wskazuje ten sam kierunek.' : 'Kierunki interwałów nie są zgodne lub trend jest niejednoznaczny.'}</div>`;
+    $('#overview').innerHTML = `<div class="overview-row"><span>Trend ${esc(interval)}</span><strong>${esc(a.trend)}</strong></div><div class="overview-row"><span>Trend ${esc(context)}</span><strong>${esc(c?.trend ?? (state.contextPending ? 'wczytywanie…' : 'niedostępny'))}</strong></div><div class="overview-row"><span>Cena / EMA 200</span><strong>${a.price > a.averages[200].at(-1) ? 'Powyżej' : 'Poniżej'}</strong></div><div class="overview-row"><span>RSI 14</span><strong>${fmt(a.rsi)}</strong></div><div class="overview-row"><span>ATR 14</span><strong>${priceFmt(a.atr)} ${esc(instrument.quote)}</strong></div><div class="overview-row"><span>Wolumen / średnia 20</span><strong>${fmt(a.volumeRatio)}×</strong></div><div class="overview-row"><span>Ostatnie aktywne FVG (maks. 5)</span><strong>${a.fvg.length}</strong></div><div class="insight">${!c ? (state.contextPending ? 'Pobieram dane interwału kontekstowego.' : 'Brak wystarczających danych dla interwału kontekstowego.') : a.trend === c.trend && a.trend !== 'niejednoznaczny' ? 'Struktura obu interwałów wskazuje ten sam kierunek.' : 'Kierunki interwałów nie są zgodne lub trend jest niejednoznaczny.'}</div>`;
   } else {
     const lastClosed = state.candles.at(-1);
     const stale = lastClosed && state.fetchedAt / 1000 - (lastClosed.time + state.seconds) > state.seconds * 2;
     $('#overview').textContent = stale ? 'Analiza niedostępna: ostatnia zamknięta świeca MEXC jest nieaktualna. Wykres pokazuje otrzymaną historię.' : state.hasGaps ? 'Analiza niedostępna: w historii świec MEXC występują luki. Wykres pokazuje otrzymane dane.' : 'Za mało zamkniętych świec do analizy EMA 200. Wykres pokazuje dostępną historię.';
   }
   $('#scenarios').innerHTML = scenario('long') + scenario('short');
-  if (!preserveCalculator) { $('#entry').value = last.close; $('#stop').value = ''; $('#target').value = ''; }
-  calculate();
 }
 async function getCandles(market, symbol, interval) {
   const res = await fetch(`/api/candles?${new URLSearchParams({market, symbol, interval})}`);
@@ -177,6 +183,7 @@ function storeManual() {
   catch { $('#message').textContent = 'Nie udało się zapisać ręcznych poziomów w przeglądarce.'; }
 }
 let liveTimer;
+let retryTimer;
 let liveGeneration = 0;
 function setLiveStatus(text, active = false) {
   $('#live-status').textContent = text;
@@ -211,37 +218,53 @@ function scheduleLive() {
       } else {
         setLiveStatus('Brak aktualnej świecy MEXC · ponawianie');
       }
-    } catch {
+    } catch (error) {
       if (generation !== liveGeneration) return;
-      setLiveStatus('Brak połączenia z MEXC · ponawianie');
+      setLiveStatus(`Aktualizacja przerwana · ${error.message || 'błąd połączenia'} · ponawianie`);
     }
     if (generation === liveGeneration) scheduleLive();
   }, document.hidden ? 15000 : 5000);
 }
 async function load({ preserve = false } = {}) {
   clearTimeout(liveTimer);
+  clearTimeout(retryTimer);
   liveGeneration++;
-  const request = ++lastRequest, market = $('#market').value, symbol = $('#symbol').value.toUpperCase().replace(/[-_/\\s]/g, ''), interval = $('#interval').value, context = $('#context').value;
+  const request = ++lastRequest, market = $('#market').value, symbol = $('#symbol').value.toUpperCase().replace(/[-_/\s]/g, ''), interval = $('#interval').value, context = $('#context').value;
   const sameChart = preserve && state?.market === market && state.symbol === symbol && state.interval === interval;
-  if (!sameChart && state && (state.market !== market || state.symbol !== symbol || state.interval !== interval)) { $('#draw-mode').value = ''; pendingFib = null; $('#draw-status').textContent = ''; $('#chart').classList.remove('drawing'); }
+  if (state && (state.market !== market || state.symbol !== symbol || state.interval !== interval)) {
+    $('#draw-mode').value = ''; pendingFib = null; $('#draw-status').textContent = ''; $('#chart').classList.remove('drawing');
+    state = null;
+    candlesSeries.setData([]); Object.values(emaSeries).forEach(series => series.setData([]));
+    priceLines.forEach(line => candlesSeries.removePriceLine(line)); priceLines = []; zones.setZones([]);
+    $('#price').textContent = '—'; $('#chart-title').textContent = symbol;
+    $('#candle-time').textContent = 'Pobieranie danych…'; $('#data-status').textContent = '';
+    $('#overlay-summary').textContent = 'Pobieranie danych…'; $('#overview').textContent = 'Pobieranie danych…'; $('#scenarios').innerHTML = '';
+  }
   $('#symbol').value = symbol;
   $('#message').textContent = 'Pobieram świece MEXC…';
   setLiveStatus('Łączenie z MEXC…');
   $('#refresh').disabled = true;
   try {
-    const [result, contextResult] = await Promise.allSettled([getCandles(market, symbol, interval), getCandles(market, symbol, context)]);
+    const primary = getCandles(market, symbol, interval);
+    const contextRequest = (interval === context ? primary : getCandles(market, symbol, context)).catch(() => null);
+    const data = await primary;
     if (request !== lastRequest) return;
-    if (result.status === 'rejected') throw result.reason;
-    const data = result.value;
-    const contextData = contextResult.status === 'fulfilled' ? contextResult.value : null;
-    state = { ...data, analysis: analysisFor(data), contextAnalysis: analysisFor(contextData), market, symbol, interval, context };
+    state = { ...data, analysis: analysisFor(data), contextAnalysis: null, contextPending: true, market, symbol, interval, context };
+    const displayedState = state;
     if (!sameChart) manual = readManual(market, symbol, interval);
     try { localStorage.setItem('przystan:last-chart', JSON.stringify({market, symbol, interval, context})); } catch { /* The chart works without storage. */ }
     render({ preserveView: sameChart, preserveCalculator: sameChart });
     if (data.currentCandle) setLiveStatus(`Świeca bieżąca · aktualizacja ${new Date(data.fetchedAt).toLocaleTimeString('pl-PL')}`, true);
     else setLiveStatus('Brak aktualnej świecy MEXC · ponawianie');
-    $('#message').textContent = contextData ? '' : 'Wykres jest dostępny, ale nie udało się pobrać danych interwału kontekstowego.';
+    $('#message').textContent = '';
     scheduleLive();
+    contextRequest.then(contextData => {
+      if (request !== lastRequest || state !== displayedState) return;
+      state.contextAnalysis = analysisFor(contextData);
+      state.contextPending = false;
+      renderOverview();
+      if (!contextData) $('#message').textContent = 'Wykres jest dostępny, ale nie udało się pobrać danych interwału kontekstowego.';
+    });
   } catch (error) {
     if (request !== lastRequest) return;
     state = null;
@@ -250,7 +273,9 @@ async function load({ preserve = false } = {}) {
     $('#price').textContent = '—'; $('#chart-title').textContent = `${symbol} · ${market === 'spot' ? 'Spot' : 'Perpetual'}`;
     $('#candle-time').textContent = 'Dane niedostępne'; $('#data-status').textContent = ''; $('#overlay-summary').textContent = 'Dane niedostępne.';
     $('#overview').textContent = 'Analiza niedostępna.'; $('#scenarios').innerHTML = ''; setLiveStatus('Brak danych');
-    $('#message').textContent = `Nie udało się pobrać wykresu. ${error.message}`;
+    const retryable = /nie udało się połączyć|failed to fetch|networkerror|HTTP (429|5\d\d)/i.test(error.message);
+    $('#message').textContent = `Nie udało się pobrać wykresu. ${error.message}${retryable ? ' Ponowię próbę za 10 sekund.' : ''}`;
+    if (retryable) retryTimer = setTimeout(() => { if (request === lastRequest) load(); }, 10000);
   } finally { if (request === lastRequest) $('#refresh').disabled = false; }
 }
 function calculate() {
@@ -341,15 +366,13 @@ const symbolList = $('#symbol-list');
 function closeSymbols() {
   symbolList.hidden = true;
   symbolInput.setAttribute('aria-expanded', 'false');
+  $('#symbol-toggle').setAttribute('aria-expanded', 'false');
   symbolInput.removeAttribute('aria-activedescendant');
   selectedSuggestion = -1;
 }
-function showSymbols() {
-  const normalize = text => text.toUpperCase().replace(/[^\p{L}\p{N}]/gu, '');
-  const query = normalize(symbolInput.value);
-  const category = $('#asset-category').value;
-  symbolMatches = symbolCatalog.filter(item => (category === 'all' || item.category === category) && (normalize(item.symbol).includes(query) || normalize(item.name).includes(query)))
-    .sort((a, b) => Number(!normalize(a.base).startsWith(query)) - Number(!normalize(b.base).startsWith(query)) || Number(a.quote !== 'USDT') - Number(b.quote !== 'USDT') || a.base.localeCompare(b.base));
+function showSymbols(showAll = false) {
+  const query = showAll ? '' : symbolInput.value;
+  symbolMatches = findSymbols(symbolCatalog, query, $('#asset-category').value);
   symbolList.replaceChildren();
   selectedSuggestion = -1;
   if (!symbolCatalog.length) return;
@@ -373,7 +396,8 @@ function showSymbols() {
       const pair = document.createElement('strong');
       pair.textContent = `${item.base} / ${item.quote}`;
       const market = document.createElement('span');
-      market.textContent = `${item.category === 'stock' ? 'Powiązane z akcjami · ' : ''}${$('#market').value === 'spot' ? 'Spot' : 'Perpetual'}${item.linear ? '' : ` · rozliczenie ${item.settlement}`}`;
+      const categoryLabel = { crypto: 'Kryptowaluty', stock: 'Powiązane z akcjami', other: 'Inne / bez kategorii' }[item.category] || 'Inne / bez kategorii';
+      market.textContent = `${categoryLabel} · ${$('#market').value === 'spot' ? 'Spot' : 'Perpetual'}${item.linear ? '' : ` · rozliczenie ${item.settlement}`}`;
       option.append(pair, market);
       option.addEventListener('mousedown', event => event.preventDefault());
       option.addEventListener('click', () => chooseSymbol(item));
@@ -383,6 +407,7 @@ function showSymbols() {
   symbolList.hidden = false;
   symbolList.scrollTop = 0;
   symbolInput.setAttribute('aria-expanded', 'true');
+  $('#symbol-toggle').setAttribute('aria-expanded', 'true');
   $('#symbol-feedback').textContent = `Liczba podpowiedzi: ${symbolMatches.length}.`;
 }
 function chooseSymbol(item) {
@@ -403,20 +428,26 @@ async function fetchSymbols() {
     if (request !== catalogRequest) return;
     symbolCatalog = data.symbols;
     $('#symbol-feedback').textContent = `Pobrano ${symbolCatalog.length} par.`;
-    if (document.activeElement === symbolInput) showSymbols();
+    if (document.activeElement === symbolInput) showSymbols(true);
   } catch (error) {
     if (request !== catalogRequest) return;
     $('#symbol-feedback').textContent = error.message;
     $('#message').textContent = `Podpowiedzi par są niedostępne. Możesz wpisać parę ręcznie. ${error.message}`;
   }
 }
-$('#asset-category').addEventListener('change', () => { symbolInput.focus(); showSymbols(); });
-symbolInput.addEventListener('focus', showSymbols);
-symbolInput.addEventListener('input', showSymbols);
+$('#asset-category').addEventListener('change', closeSymbols);
+symbolInput.addEventListener('focus', () => { symbolInput.select(); showSymbols(true); });
+symbolInput.addEventListener('input', () => showSymbols());
+$('#symbol-toggle').addEventListener('mousedown', event => event.preventDefault());
+$('#symbol-toggle').addEventListener('click', () => {
+  const wasOpen = !symbolList.hidden;
+  if (wasOpen) closeSymbols();
+  else { symbolInput.focus(); symbolInput.select(); showSymbols(true); }
+});
 symbolInput.addEventListener('keydown', event => {
   if (event.key === 'Escape') { closeSymbols(); return; }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    if (symbolList.hidden) showSymbols();
+    if (symbolList.hidden) showSymbols(true);
     if (!symbolMatches.length) return;
     event.preventDefault();
     selectedSuggestion = (selectedSuggestion + (event.key === 'ArrowDown' ? 1 : -1) + symbolMatches.length) % symbolMatches.length;

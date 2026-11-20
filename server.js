@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
+import { classifyInstrument } from './src/instruments.js';
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
@@ -7,32 +8,48 @@ let openRouterKey = '';
 const intervals = { 'M1': ['1m', 'Min1', 60], 'M5': ['5m', 'Min5', 300], 'M15': ['15m', 'Min15', 900], 'M30': ['30m', 'Min30', 1800], 'H1': ['60m', 'Min60', 3600], 'H4': ['4h', 'Hour4', 14400], 'H8': ['8h', 'Hour8', 28800], 'D1': ['1d', 'Day1', 86400], 'W1': ['1w', 'Week1', 604800] };
 
 async function getJson(url, options) {
-  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
+  let response;
+  try {
+    response = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
+  } catch (error) {
+    const host = new URL(url).hostname;
+    const code = error.cause?.code || error.code || (error.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK_ERROR');
+    throw new Error(`Nie udało się połączyć z ${host} (${code}). Sprawdź połączenie internetowe i ustawienia sieci.`);
+  }
   if (!response.ok) throw new Error(`Usługa odpowiedziała kodem HTTP ${response.status}`);
   return response.json();
 }
 
 
 const symbolCache = new Map();
+const symbolRequests = new Map();
 
 async function getSymbols(market) {
   if (!['spot', 'futures'].includes(market)) throw new Error('Nieprawidłowy rynek.');
   const cached = symbolCache.get(market);
   if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) return cached;
+  if (symbolRequests.has(market)) return symbolRequests.get(market);
+  const request = fetchSymbolsFromMexc(market);
+  symbolRequests.set(market, request);
+  try { return await request; }
+  finally { symbolRequests.delete(market); }
+}
+
+async function fetchSymbolsFromMexc(market) {
   let symbols;
   if (market === 'spot') {
     const data = await getJson('https://api.mexc.com/api/v3/exchangeInfo');
     if (!Array.isArray(data.symbols)) throw new Error('Nie można odczytać par spot z MEXC.');
     symbols = data.symbols.filter(item => item.status === '1' && item.isSpotTradingAllowed === true)
       .map(item => ({ symbol: item.symbol, exchangeSymbol: item.symbol, base: item.baseAsset, quote: item.quoteAsset,
-        name: item.fullName || item.baseAsset, category: (item.conceptPlates || []).some(tag => /stock/i.test(tag)) ? 'stock' : 'other',
+        name: item.fullName || item.baseAsset, category: classifyInstrument(item.conceptPlates),
         settlement: item.quoteAsset, linear: true, pricePrecision: item.quotePrecision }));
   } else {
     const data = await getJson('https://contract.mexc.com/api/v1/contract/detail');
     if (!data.success || !Array.isArray(data.data)) throw new Error('Nie można odczytać kontraktów MEXC.');
     symbols = data.data.filter(item => item.state === 0 && item.futureType === 1)
       .map(item => ({ symbol: item.baseCoin + item.quoteCoin, exchangeSymbol: item.symbol, base: item.baseCoin, quote: item.quoteCoin,
-        name: item.baseCoinName || item.baseCoin, category: (item.conceptPlate || []).some(tag => /stock|ETF/i.test(tag)) ? 'stock' : 'other',
+        name: item.baseCoinName || item.baseCoin, category: classifyInstrument(item.conceptPlate),
         settlement: item.settleCoin, linear: item.quoteCoin === item.settleCoin, pricePrecision: item.priceScale }));
   }
   if (!symbols.length) throw new Error('MEXC zwrócił pustą listę instrumentów.');
