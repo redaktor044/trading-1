@@ -12,6 +12,33 @@ async function getJson(url, options) {
   return response.json();
 }
 
+
+const symbolCache = new Map();
+app.get('/api/symbols', async (req, res) => {
+  try {
+    const market = req.query.market || 'futures';
+    if (!['spot', 'futures'].includes(market)) throw new Error('Nieprawidłowy rynek.');
+    let cached = symbolCache.get(market);
+    if (!cached || Date.now() - cached.fetchedAt > 5 * 60 * 1000) {
+      let symbols;
+      if (market === 'spot') {
+        const data = await getJson('https://api.mexc.com/api/v3/exchangeInfo');
+        if (!Array.isArray(data.symbols)) throw new Error('Nie można odczytać par spot z MEXC.');
+        symbols = data.symbols.filter(item => item.quoteAsset === 'USDT' && item.status === '1' && item.isSpotTradingAllowed === true)
+          .map(item => ({ symbol: item.symbol, base: item.baseAsset, quote: item.quoteAsset }));
+      } else {
+        const data = await getJson('https://contract.mexc.com/api/v1/contract/detail');
+        if (!data.success || !Array.isArray(data.data)) throw new Error('Nie można odczytać kontraktów MEXC.');
+        symbols = data.data.filter(item => item.quoteCoin === 'USDT' && item.settleCoin === 'USDT' && item.futureType === 1 && item.state === 0)
+          .map(item => ({ symbol: item.baseCoin + item.quoteCoin, base: item.baseCoin, quote: item.quoteCoin }));
+      }
+      cached = { symbols, fetchedAt: Date.now() };
+      symbolCache.set(market, cached);
+    }
+    res.json(cached);
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+
 app.get('/api/candles', async (req, res) => {
   try {
     const { market = 'futures', symbol = 'BTCUSDT', interval = 'M15' } = req.query;
